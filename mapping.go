@@ -4,170 +4,220 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/xuri/excelize/v2"
 )
 
+// File represents an Excel file
 type File struct {
-	Col  []string
 	Path string
 	Name string
+	Col  []string
 }
 
-type MappingFunc func(rowA []string, fileA *File) interface{}
+// MappingFunc generates a value for a FileB column
+type MappingFunc func(row []string, fA *File) interface{}
 
-type ColMapping struct {
-	FileA   *File
-	FileB   *File
-	Mapping map[string]interface{}
+// ColumnMapping represents a mapping rule
+type ColumnMapping struct {
+	Target    string        // Column in FileB
+	Source    []string      // Columns in FileA
+	Transform MappingFunc   // Optional transform
+	Default   interface{}   // Default value if missing
 }
 
-func InitFile(filePath, fileName string) (*File, error) {
-	fullPath := filepath.Join(filePath, fileName)
-	if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+// FileIndex maps lowercase trimmed column names to indices
+type FileIndex struct {
+	ColMap map[string]int
+	File   *File
+}
+
+// NewFileIndex creates a column index map
+func NewFileIndex(f *File) *FileIndex {
+	m := make(map[string]int)
+	for i, col := range f.Col {
+		m[strings.ToLower(strings.TrimSpace(col))] = i
+	}
+	return &FileIndex{ColMap: m, File: f}
+}
+
+// ColIndex returns the index of a column in a file
+func ColIndex(name string, f *File) int {
+	if f == nil { return -1 }
+	idx, ok := NewFileIndex(f).ColMap[strings.ToLower(strings.TrimSpace(name))]
+	if !ok { return -1 }
+	return idx
+}
+
+// InitFile initializes a File, reading headers if it exists
+func InitFile(dir, name string) (*File, error) {
+	path := filepath.Join(dir, name)
+	if _, err := os.Stat(path); os.IsNotExist(err) {
 		f := excelize.NewFile()
-		if err := f.SaveAs(fullPath); err != nil {
-			return nil, fmt.Errorf("failed to create file: %v", err)
+		if err := f.SaveAs(path); err != nil {
+			return nil, fmt.Errorf("create file: %v", err)
 		}
-		return &File{Col: []string{}, Path: fullPath, Name: fileName}, nil
+		return &File{Path: path, Name: name}, nil
 	}
 
-	f, err := excelize.OpenFile(fullPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open file: %v", err)
-	}
+	f, err := excelize.OpenFile(path)
+	if err != nil { return nil, fmt.Errorf("open file: %v", err) }
 	defer f.Close()
 
 	sheets := f.GetSheetList()
-	if len(sheets) == 0 {
-		return &File{Col: []string{}, Path: fullPath, Name: fileName}, nil
-	}
-	sheetName := sheets[0]
+	if len(sheets) == 0 { return &File{Path: path, Name: name}, nil }
 
-	rows, err := f.GetRows(sheetName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read rows: %v", err)
-	}
+	rows, err := f.GetRows(sheets[0])
+	if err != nil || len(rows) == 0 { return &File{Path: path, Name: name}, nil }
 
-	var headers []string
-	if len(rows) > 0 {
-		headers = rows[0]
-	}
-
-	return &File{
-		Col:  headers,
-		Path: fullPath,
-		Name: fileName,
-	}, nil
+	return &File{Path: path, Name: name, Col: rows[0]}, nil
 }
 
-func ColIndex(name string, f *File) int {
-	for i, col := range f.Col {
-		if strings.EqualFold(strings.TrimSpace(col), strings.TrimSpace(name)) {
-			return i
-		}
-	}
-	return -1
+// ParseFloatSafe parses a string into float64, returns 0 on error
+func ParseFloatSafe(s string) float64 {
+	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil { return 0 }
+	return v
 }
 
-func FillFile(colMapping *ColMapping, outputPath string) error {
-	var fB *excelize.File
-	if _, err := os.Stat(colMapping.FileB.Path); os.IsNotExist(err) {
-		fB = excelize.NewFile()
-	} else {
-		tmp, err := excelize.OpenFile(colMapping.FileB.Path)
-		if err != nil {
-			return fmt.Errorf("failed to open fileB: %v", err)
-		}
-		fB = tmp
+// FillFile populates FileB from FileA using ColumnMapping rules
+func FillFile(fileA, fileB *File, mappings []ColumnMapping, output string) error {
+	if fileA == nil || fileB == nil {
+		return fmt.Errorf("fileA or fileB is nil")
 	}
 
-	sheets := fB.GetSheetList()
-	var sheetB string
-	if len(sheets) == 0 {
-		sheetB = "Sheet1"
-		fB.NewSheet(sheetB)
-		fB.SetActiveSheet(0)
-	} else {
-		sheetB = sheets[0]
-	}
-
-	fA, err := excelize.OpenFile(colMapping.FileA.Path)
-	if err != nil {
-		return fmt.Errorf("failed to open fileA: %v", err)
-	}
+	// Open FileA
+	fA, err := excelize.OpenFile(fileA.Path)
+	if err != nil { return fmt.Errorf("open FileA: %v", err) }
 	defer fA.Close()
 
-	sheetA := fA.GetSheetList()[0]
-	rowsA, err := fA.GetRows(sheetA)
-	if err != nil {
-		return fmt.Errorf("failed to read rows from fileA: %v", err)
+	rowsA, err := fA.GetRows(fA.GetSheetList()[0])
+	if err != nil || len(rowsA) <= 1 { return fmt.Errorf("FileA has no data") }
+
+	// Open or create FileB
+	var fB *excelize.File
+	if _, err := os.Stat(fileB.Path); os.IsNotExist(err) {
+		fB = excelize.NewFile()
+	} else {
+		fB, err = excelize.OpenFile(fileB.Path)
+		if err != nil { return fmt.Errorf("open FileB: %v", err) }
 	}
-	if len(rowsA) <= 1 {
-		return fmt.Errorf("no data rows found in fileA")
-	}
+	defer fB.Close()
 
-	headersB := append([]string{}, colMapping.FileB.Col...)
-	headerChanged := false
-	existingHeaderMap := make(map[string]bool)
-	for _, h := range headersB {
-		existingHeaderMap[strings.TrimSpace(h)] = true
-	}
+	sheetB := ensureSheet(fB)
 
-	for key := range colMapping.Mapping {
-		if !existingHeaderMap[strings.TrimSpace(key)] {
-			headersB = append(headersB, key)
-			existingHeaderMap[strings.TrimSpace(key)] = true
-			headerChanged = true
-		}
-	}
+	// Determine headers
+	headers := buildHeaders(fileB.Col, mappings)
+	writeHeaders(fB, sheetB, headers)
+	fileB.Col = headers
 
-	if len(colMapping.FileB.Col) == 0 || headerChanged {
-		for i, h := range headersB {
-			cell, _ := excelize.CoordinatesToCellName(i+1, 1)
-			fB.SetCellValue(sheetB, cell, h)
-		}
-		colMapping.FileB.Col = headersB
-	}
+	colIdxB := NewFileIndex(&File{Col: headers})
 
-	colIndexB := make(map[string]int)
-	for i, col := range colMapping.FileB.Col {
-		colIndexB[strings.TrimSpace(col)] = i
-	}
+	// Fill rows
+	for i, row := range rowsA[1:] {
+		vals := make([]interface{}, len(colIdxB.ColMap))
+		for _, m := range mappings {
+			idxB, ok := colIdxB.ColMap[strings.ToLower(strings.TrimSpace(m.Target))]
+			if !ok { continue }
 
-	startRow := 2
-	for r := 1; r < len(rowsA); r++ {
-		rowA := rowsA[r]
-		targetRow := startRow + (r - 1)
-
-		for colB, mapping := range colMapping.Mapping {
-			idxB, ok := colIndexB[strings.TrimSpace(colB)]
-			if !ok {
-				continue
-			}
-
-			var value interface{}
-			switch m := mapping.(type) {
-			case string:
-				idxA := ColIndex(m, colMapping.FileA)
-				if idxA >= 0 && idxA < len(rowA) {
-					value = rowA[idxA]
+			var val interface{}
+			if m.Transform != nil {
+				val = m.Transform(row, fileA) // transform can use ColIndex directly
+			} else if len(m.Source) > 0 {
+				srcIdx := ColIndex(m.Source[0], fileA)
+				if srcIdx != -1 && srcIdx < len(row) {
+					val = row[srcIdx]
+				} else {
+					val = m.Default
 				}
-			case MappingFunc:
-				value = m(rowA, colMapping.FileA)
+			} else {
+				val = m.Default
 			}
+			vals[idxB] = val
+		}
+		_ = fB.SetSheetRow(sheetB, fmt.Sprintf("A%d", i+2), &vals)
+	}
 
-			cellB, _ := excelize.CoordinatesToCellName(idxB+1, targetRow)
-			if err := fB.SetCellValue(sheetB, cellB, value); err != nil {
-				return fmt.Errorf("failed to set cell %s: %v", cellB, err)
-			}
+	if err := fB.SaveAs(output); err != nil {
+		return fmt.Errorf("save FileB: %v", err)
+	}
+	return nil
+}
+
+// Helper: ensure at least one sheet exists
+func ensureSheet(f *excelize.File) string {
+	sheets := f.GetSheetList()
+	if len(sheets) == 0 {
+		name := "Sheet1"
+		f.NewSheet(name)
+		f.SetActiveSheet(0)
+		return name
+	}
+	return sheets[0]
+}
+
+// Helper: build final headers
+func buildHeaders(existing []string, mappings []ColumnMapping) []string {
+	headerSet := make(map[string]struct{})
+	for _, h := range existing { headerSet[strings.ToLower(strings.TrimSpace(h))] = struct{}{} }
+	headers := append([]string{}, existing...)
+	for _, m := range mappings {
+		key := strings.TrimSpace(m.Target)
+		if _, exists := headerSet[strings.ToLower(key)]; !exists {
+			headers = append(headers, key)
 		}
 	}
+	return headers
+}
 
-	if err := fB.SaveAs(outputPath); err != nil {
-		return fmt.Errorf("failed to save fileB: %v", err)
+// Helper: write header row
+func writeHeaders(f *excelize.File, sheet string, headers []string) {
+	vals := make([]interface{}, len(headers))
+	for i, h := range headers { vals[i] = h }
+	_ = f.SetSheetRow(sheet, "A1", &vals)
+}
+
+// Transform helpers
+func SumColumns(cols ...string) MappingFunc {
+	return func(row []string, fA *File) interface{} {
+		sum := 0.0
+		for _, c := range cols {
+			idx := ColIndex(c, fA)
+			if idx != -1 && idx < len(row) {
+				sum += ParseFloatSafe(row[idx])
+			}
+		}
+		return sum
 	}
+}
 
-	return nil
+func ConcatColumns(sep string, cols ...string) MappingFunc {
+	return func(row []string, fA *File) interface{} {
+		vals := []string{}
+		for _, c := range cols {
+			idx := ColIndex(c, fA)
+			if idx != -1 && idx < len(row) && row[idx] != "" {
+				vals = append(vals, row[idx])
+			}
+		}
+		return strings.Join(vals, sep)
+	}
+}
+
+func AverageColumns(cols ...string) MappingFunc {
+	return func(row []string, fA *File) interface{} {
+		sum := 0.0
+		count := 0
+		for _, c := range cols {
+			idx := ColIndex(c, fA)
+			if idx != -1 && idx < len(row) && row[idx] != "" {
+				sum += ParseFloatSafe(row[idx])
+				count++
+			}
+		}
+		if count == 0 { return 0 }
+		return sum / float64(count)
+	}
 }
