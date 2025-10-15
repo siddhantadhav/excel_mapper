@@ -9,7 +9,12 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
-// File represents an Excel file
+/*
+=====================
+Excel File Structures
+=====================
+*/
+
 type File struct {
 	Path string
 	Name string
@@ -21,19 +26,25 @@ type MappingFunc func(row []string, fA *File) interface{}
 
 // ColumnMapping represents a mapping rule
 type ColumnMapping struct {
-	Target    string      // Column in FileB
-	Source    []string    // Columns in FileA
-	Transform MappingFunc // Optional transform
-	Default   interface{} // Default value if missing
+	Target    string
+	Source    []string
+	Transform MappingFunc
+	Formula   string
+	Params    map[string]interface{}
+	Default   interface{}
 }
 
-// FileIndex maps lowercase trimmed column names to indices
+/*
+=====================
+File Indexing
+=====================
+*/
+
 type FileIndex struct {
 	ColMap map[string]int
 	File   *File
 }
 
-// NewFileIndex creates a column index map
 func NewFileIndex(f *File) *FileIndex {
 	m := make(map[string]int)
 	for i, col := range f.Col {
@@ -42,7 +53,6 @@ func NewFileIndex(f *File) *FileIndex {
 	return &FileIndex{ColMap: m, File: f}
 }
 
-// ColIndex returns the index of a column in a file
 func ColIndex(name string, f *File) int {
 	if f == nil {
 		return -1
@@ -54,7 +64,12 @@ func ColIndex(name string, f *File) int {
 	return idx
 }
 
-// InitFile initializes a File, reading headers if it exists
+/*
+=====================
+File Initialization
+=====================
+*/
+
 func InitFile(dir, name string) (*File, error) {
 	path := filepath.Join(dir, name)
 	if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -84,13 +99,17 @@ func InitFile(dir, name string) (*File, error) {
 	return &File{Path: path, Name: name, Col: rows[0]}, nil
 }
 
-// FillFile populates FileB from FileA using ColumnMapping rules
+/*
+=====================
+File Filling
+=====================
+*/
+
 func FillFile(fileA, fileB *File, mappings []ColumnMapping, output string) error {
 	if fileA == nil || fileB == nil {
 		return fmt.Errorf("fileA or fileB is nil")
 	}
 
-	// Open FileA
 	fA, err := excelize.OpenFile(fileA.Path)
 	if err != nil {
 		return fmt.Errorf("open FileA: %v", err)
@@ -102,7 +121,6 @@ func FillFile(fileA, fileB *File, mappings []ColumnMapping, output string) error
 		return fmt.Errorf("FileA has no data")
 	}
 
-	// Open or create FileB
 	var fB *excelize.File
 	if _, err := os.Stat(fileB.Path); os.IsNotExist(err) {
 		fB = excelize.NewFile()
@@ -116,11 +134,10 @@ func FillFile(fileA, fileB *File, mappings []ColumnMapping, output string) error
 
 	sheetB := ensureSheet(fB)
 
-	// Determine headers
+	// Build headers
 	headers := buildHeaders(fileB.Col, mappings)
 	writeHeaders(fB, sheetB, headers)
 	fileB.Col = headers
-
 	colIdxB := NewFileIndex(&File{Col: headers})
 
 	// Fill rows
@@ -134,7 +151,9 @@ func FillFile(fileA, fileB *File, mappings []ColumnMapping, output string) error
 
 			var val interface{}
 			if m.Transform != nil {
-				val = m.Transform(row, fileA) // transform can use ColIndex directly
+				val = m.Transform(row, fileA)
+			} else if m.Formula != "" {
+				val = EvalFormula(m.Formula, m.Source, row, fileA)
 			} else if len(m.Source) > 0 {
 				srcIdx := ColIndex(m.Source[0], fileA)
 				if srcIdx != -1 && srcIdx < len(row) {
@@ -154,4 +173,35 @@ func FillFile(fileA, fileB *File, mappings []ColumnMapping, output string) error
 		return fmt.Errorf("save FileB: %v", err)
 	}
 	return nil
+}
+
+func ensureSheet(f *excelize.File) string {
+	sheets := f.GetSheetList()
+	if len(sheets) > 0 {
+		return sheets[0]
+	}
+	return f.GetSheetName(0)
+}
+
+func buildHeaders(existing []string, mappings []ColumnMapping) []string {
+	headers := make([]string, len(existing))
+	copy(headers, existing)
+
+	headerMap := make(map[string]bool)
+	for _, h := range existing {
+		headerMap[h] = true
+	}
+
+	for _, m := range mappings {
+		if _, ok := headerMap[m.Target]; !ok {
+			headers = append(headers, m.Target)
+			headerMap[m.Target] = true
+		}
+	}
+
+	return headers
+}
+
+func writeHeaders(f *excelize.File, sheet string, headers []string) {
+	_ = f.SetSheetRow(sheet, "A1", &headers)
 }

@@ -1,102 +1,93 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
-	"path/filepath"
+	"log"
+	"os"
 	"time"
 
 	"github.com/siddhantadhav/excel_mapper"
 )
 
 func main() {
-	dir := "./sample_data"
-
-	// Initialize FileA (source)
-	fileA, err := excel_mapper.InitFile(dir, "fileA.xlsx")
+	// ------------------------------
+	// Read mapping JSON
+	// ------------------------------
+	jsonData, err := os.ReadFile("sample_data/mapping.json")
 	if err != nil {
-		fmt.Println("Error initializing fileA:", err)
-		return
+		log.Fatal("failed to read JSON:", err)
 	}
 
-	// Initialize FileB (destination)
-	fileB, err := excel_mapper.InitFile(dir, "fileB.xlsx")
-	if err != nil {
-		fmt.Println("Error initializing fileB:", err)
-		return
+	var input struct {
+		UniqueId string                         `json:"unique_id"`
+		Mappings []excel_mapper.DBColumnMapping `json:"mappings"`
+	}
+	if err := json.Unmarshal(jsonData, &input); err != nil {
+		log.Fatal("invalid JSON:", err)
 	}
 
-	// Define mappings
-	mappings := []excel_mapper.ColumnMapping{
-		{Target: "First Name", Source: []string{"First Name"}},
-		{Target: "Last Name", Source: []string{"Last Name"}},
-		{Target: "Age", Source: []string{"Age"}},
-		{Target: "Full Name", Transform: excel_mapper.ConcatColumns(" ", "First Name", "Last Name")},
-		{Target: "Score", Transform: excel_mapper.SumColumns("Math", "Science")},
-		{Target: "Average", Transform: excel_mapper.AverageColumns("Math", "Science")},
-		{Target: "Adjusted Score", Transform: excel_mapper.MappingFunc(func(row []string, f *excel_mapper.File) interface{} {
-			mathIdx := excel_mapper.ColIndex("Math", f)
-			sciIdx := excel_mapper.ColIndex("Science", f)
-			if mathIdx == -1 || sciIdx == -1 {
-				return 0
-			}
-			math := excel_mapper.ParseFloatSafe(row[mathIdx])
-			science := excel_mapper.ParseFloatSafe(row[sciIdx])
-			return (math*0.6 + science*0.4)
-		})},
-		{Target: "Percentage", Transform: excel_mapper.MappingFunc(func(row []string, f *excel_mapper.File) interface{} {
-			scoreIdx := excel_mapper.ColIndex("Score", f)
-			if scoreIdx == -1 {
-				return 0
-			}
-			score := excel_mapper.ParseFloatSafe(row[scoreIdx])
-			return (score / 200) * 100
-		})},
-	}
-
-	// Output Excel file
-	output := filepath.Join(dir, "fileB_filled.xlsx")
-
-	// Fill FileB using mappings
-	err = excel_mapper.FillFile(fileA, fileB, mappings, output)
-	if err != nil {
-		fmt.Println("Error filling file:", err)
-		return
-	}
-	fmt.Println("✅ Excel mapping completed successfully. Output:", output)
-
-	// ----------------------
-	// MongoDB Storage Example
-	// ----------------------
-
-	cfg := excel_mapper.MongoConfig{
-		URI:        "mongodb://localhost:27017",
-		Database:   "excel_mapper_db",
+	// ------------------------------
+	// Connect to MongoDB
+	// ------------------------------
+	mongoCfg := excel_mapper.MongoConfig{
+		URI:        "mongodb://karmaAdmin:Admin%401234@192.168.1.225:27017/?authSource=admin",
+		Database:   "excel_db",
 		Collection: "mappings",
-		Timeout:    5 * time.Second,
+		Timeout:    10 * time.Second,
 	}
 
-	store, err := excel_mapper.ConnectMongo(cfg)
+	store, err := excel_mapper.ConnectMongo(mongoCfg)
 	if err != nil {
-		fmt.Println("Error connecting to MongoDB:", err)
-		return
+		log.Fatal("connect mongo:", err)
 	}
 	defer store.Close()
 
-	uniqueId := "mapping_001"
-
-	// Save mapping to MongoDB
-	err = store.SaveMapping(uniqueId, mappings)
-	if err != nil {
-		fmt.Println("Error saving mapping to MongoDB:", err)
-		return
+	// ------------------------------
+	// Save mappings to Mongo
+	// ------------------------------
+	if err := store.SaveMapping(input.UniqueId, input.Mappings); err != nil {
+		log.Fatal("save mapping:", err)
 	}
-	fmt.Println("✅ Mapping saved to MongoDB with uniqueId:", uniqueId)
+	fmt.Println("✅ Mappings saved to MongoDB")
 
-	// Load mapping back from MongoDB
-	loadedMappings, err := store.LoadMapping(uniqueId)
+	// ------------------------------
+	// Load mappings back from Mongo
+	// ------------------------------
+	dbMappings, err := store.LoadMapping(input.UniqueId)
 	if err != nil {
-		fmt.Println("Error loading mapping from MongoDB:", err)
-		return
+		log.Fatal("load mapping:", err)
 	}
-	fmt.Printf("✅ Loaded %d mappings from MongoDB for uniqueId %s\n", len(loadedMappings), uniqueId)
+	fmt.Printf("✅ Loaded %d mappings from MongoDB\n", len(dbMappings))
+
+	// ------------------------------
+	// Convert DBColumnMapping to ColumnMapping
+	// ------------------------------
+	var colMappings []excel_mapper.ColumnMapping
+	for _, m := range dbMappings {
+		colMappings = append(colMappings, m.ToColumnMapping())
+	}
+
+	// ------------------------------
+	// Initialize Excel files
+	// ------------------------------
+	fileA, err := excel_mapper.InitFile("sample_data", "fileA.xlsx")
+	if err != nil {
+		log.Fatal("init FileA:", err)
+	}
+
+	fileB, err := excel_mapper.InitFile("sample_data", "fileB.xlsx")
+	if err != nil {
+		log.Fatal("init FileB:", err)
+	}
+
+	// ------------------------------
+	// Fill FileB from FileA
+	// ------------------------------
+	outputPath := "sample_data/fileB_filled.xlsx"
+	if err := excel_mapper.FillFile(fileA, fileB, colMappings, outputPath); err != nil {
+		log.Fatal("fill FileB:", err)
+	}
+
+	fmt.Println("✅ FileB has been filled successfully:", outputPath)
 }
