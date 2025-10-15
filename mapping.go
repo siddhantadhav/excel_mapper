@@ -4,13 +4,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/xuri/excelize/v2"
 )
 
-// File represents an Excel file
+/*
+=====================
+Excel File Structures
+=====================
+*/
+
 type File struct {
 	Path string
 	Name string
@@ -22,19 +26,25 @@ type MappingFunc func(row []string, fA *File) interface{}
 
 // ColumnMapping represents a mapping rule
 type ColumnMapping struct {
-	Target    string        // Column in FileB
-	Source    []string      // Columns in FileA
-	Transform MappingFunc   // Optional transform
-	Default   interface{}   // Default value if missing
+	Target    string
+	Source    []string
+	Transform MappingFunc
+	Formula   string
+	Params    map[string]interface{}
+	Default   interface{}
 }
 
-// FileIndex maps lowercase trimmed column names to indices
+/*
+=====================
+File Indexing
+=====================
+*/
+
 type FileIndex struct {
 	ColMap map[string]int
 	File   *File
 }
 
-// NewFileIndex creates a column index map
 func NewFileIndex(f *File) *FileIndex {
 	m := make(map[string]int)
 	for i, col := range f.Col {
@@ -43,15 +53,23 @@ func NewFileIndex(f *File) *FileIndex {
 	return &FileIndex{ColMap: m, File: f}
 }
 
-// ColIndex returns the index of a column in a file
 func ColIndex(name string, f *File) int {
-	if f == nil { return -1 }
+	if f == nil {
+		return -1
+	}
 	idx, ok := NewFileIndex(f).ColMap[strings.ToLower(strings.TrimSpace(name))]
-	if !ok { return -1 }
+	if !ok {
+		return -1
+	}
 	return idx
 }
 
-// InitFile initializes a File, reading headers if it exists
+/*
+=====================
+File Initialization
+=====================
+*/
+
 func InitFile(dir, name string) (*File, error) {
 	path := filepath.Join(dir, name)
 	if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -63,56 +81,63 @@ func InitFile(dir, name string) (*File, error) {
 	}
 
 	f, err := excelize.OpenFile(path)
-	if err != nil { return nil, fmt.Errorf("open file: %v", err) }
+	if err != nil {
+		return nil, fmt.Errorf("open file: %v", err)
+	}
 	defer f.Close()
 
 	sheets := f.GetSheetList()
-	if len(sheets) == 0 { return &File{Path: path, Name: name}, nil }
+	if len(sheets) == 0 {
+		return &File{Path: path, Name: name}, nil
+	}
 
 	rows, err := f.GetRows(sheets[0])
-	if err != nil || len(rows) == 0 { return &File{Path: path, Name: name}, nil }
+	if err != nil || len(rows) == 0 {
+		return &File{Path: path, Name: name}, nil
+	}
 
 	return &File{Path: path, Name: name, Col: rows[0]}, nil
 }
 
-// ParseFloatSafe parses a string into float64, returns 0 on error
-func ParseFloatSafe(s string) float64 {
-	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
-	if err != nil { return 0 }
-	return v
-}
+/*
+=====================
+File Filling
+=====================
+*/
 
-// FillFile populates FileB from FileA using ColumnMapping rules
 func FillFile(fileA, fileB *File, mappings []ColumnMapping, output string) error {
 	if fileA == nil || fileB == nil {
 		return fmt.Errorf("fileA or fileB is nil")
 	}
 
-	// Open FileA
 	fA, err := excelize.OpenFile(fileA.Path)
-	if err != nil { return fmt.Errorf("open FileA: %v", err) }
+	if err != nil {
+		return fmt.Errorf("open FileA: %v", err)
+	}
 	defer fA.Close()
 
 	rowsA, err := fA.GetRows(fA.GetSheetList()[0])
-	if err != nil || len(rowsA) <= 1 { return fmt.Errorf("FileA has no data") }
+	if err != nil || len(rowsA) <= 1 {
+		return fmt.Errorf("FileA has no data")
+	}
 
-	// Open or create FileB
 	var fB *excelize.File
 	if _, err := os.Stat(fileB.Path); os.IsNotExist(err) {
 		fB = excelize.NewFile()
 	} else {
 		fB, err = excelize.OpenFile(fileB.Path)
-		if err != nil { return fmt.Errorf("open FileB: %v", err) }
+		if err != nil {
+			return fmt.Errorf("open FileB: %v", err)
+		}
 	}
 	defer fB.Close()
 
 	sheetB := ensureSheet(fB)
 
-	// Determine headers
+	// Build headers
 	headers := buildHeaders(fileB.Col, mappings)
 	writeHeaders(fB, sheetB, headers)
 	fileB.Col = headers
-
 	colIdxB := NewFileIndex(&File{Col: headers})
 
 	// Fill rows
@@ -120,11 +145,15 @@ func FillFile(fileA, fileB *File, mappings []ColumnMapping, output string) error
 		vals := make([]interface{}, len(colIdxB.ColMap))
 		for _, m := range mappings {
 			idxB, ok := colIdxB.ColMap[strings.ToLower(strings.TrimSpace(m.Target))]
-			if !ok { continue }
+			if !ok {
+				continue
+			}
 
 			var val interface{}
 			if m.Transform != nil {
-				val = m.Transform(row, fileA) // transform can use ColIndex directly
+				val = m.Transform(row, fileA)
+			} else if m.Formula != "" {
+				val = EvalFormula(m.Formula, m.Source, row, fileA)
 			} else if len(m.Source) > 0 {
 				srcIdx := ColIndex(m.Source[0], fileA)
 				if srcIdx != -1 && srcIdx < len(row) {
@@ -146,78 +175,33 @@ func FillFile(fileA, fileB *File, mappings []ColumnMapping, output string) error
 	return nil
 }
 
-// Helper: ensure at least one sheet exists
 func ensureSheet(f *excelize.File) string {
 	sheets := f.GetSheetList()
-	if len(sheets) == 0 {
-		name := "Sheet1"
-		f.NewSheet(name)
-		f.SetActiveSheet(0)
-		return name
+	if len(sheets) > 0 {
+		return sheets[0]
 	}
-	return sheets[0]
+	return f.GetSheetName(0)
 }
 
-// Helper: build final headers
 func buildHeaders(existing []string, mappings []ColumnMapping) []string {
-	headerSet := make(map[string]struct{})
-	for _, h := range existing { headerSet[strings.ToLower(strings.TrimSpace(h))] = struct{}{} }
-	headers := append([]string{}, existing...)
+	headers := make([]string, len(existing))
+	copy(headers, existing)
+
+	headerMap := make(map[string]bool)
+	for _, h := range existing {
+		headerMap[h] = true
+	}
+
 	for _, m := range mappings {
-		key := strings.TrimSpace(m.Target)
-		if _, exists := headerSet[strings.ToLower(key)]; !exists {
-			headers = append(headers, key)
+		if _, ok := headerMap[m.Target]; !ok {
+			headers = append(headers, m.Target)
+			headerMap[m.Target] = true
 		}
 	}
+
 	return headers
 }
 
-// Helper: write header row
 func writeHeaders(f *excelize.File, sheet string, headers []string) {
-	vals := make([]interface{}, len(headers))
-	for i, h := range headers { vals[i] = h }
-	_ = f.SetSheetRow(sheet, "A1", &vals)
-}
-
-// Transform helpers
-func SumColumns(cols ...string) MappingFunc {
-	return func(row []string, fA *File) interface{} {
-		sum := 0.0
-		for _, c := range cols {
-			idx := ColIndex(c, fA)
-			if idx != -1 && idx < len(row) {
-				sum += ParseFloatSafe(row[idx])
-			}
-		}
-		return sum
-	}
-}
-
-func ConcatColumns(sep string, cols ...string) MappingFunc {
-	return func(row []string, fA *File) interface{} {
-		vals := []string{}
-		for _, c := range cols {
-			idx := ColIndex(c, fA)
-			if idx != -1 && idx < len(row) && row[idx] != "" {
-				vals = append(vals, row[idx])
-			}
-		}
-		return strings.Join(vals, sep)
-	}
-}
-
-func AverageColumns(cols ...string) MappingFunc {
-	return func(row []string, fA *File) interface{} {
-		sum := 0.0
-		count := 0
-		for _, c := range cols {
-			idx := ColIndex(c, fA)
-			if idx != -1 && idx < len(row) && row[idx] != "" {
-				sum += ParseFloatSafe(row[idx])
-				count++
-			}
-		}
-		if count == 0 { return 0 }
-		return sum / float64(count)
-	}
+	_ = f.SetSheetRow(sheet, "A1", &headers)
 }
