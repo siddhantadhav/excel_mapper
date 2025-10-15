@@ -1,0 +1,140 @@
+package excel_mapper
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+
+	"github.com/Knetic/govaluate"
+)
+
+/*
+=====================
+Transform Helpers
+=====================
+*/
+
+func ParseFloatSafe(v string) float64 {
+	f, _ := strconv.ParseFloat(v, 64)
+	return f
+}
+
+func SumColumns(cols ...string) MappingFunc {
+	return func(row []string, f *File) interface{} {
+		sum := 0.0
+		for _, c := range cols {
+			idx := ColIndex(c, f)
+			if idx >= 0 && idx < len(row) {
+				sum += ParseFloatSafe(row[idx])
+			}
+		}
+		return sum
+	}
+}
+
+func AverageColumns(cols ...string) MappingFunc {
+	return func(row []string, f *File) interface{} {
+		sum := 0.0
+		count := 0
+		for _, c := range cols {
+			idx := ColIndex(c, f)
+			if idx >= 0 && idx < len(row) {
+				sum += ParseFloatSafe(row[idx])
+				count++
+			}
+		}
+		if count == 0 {
+			return 0
+		}
+		return sum / float64(count)
+	}
+}
+
+func ConcatColumns(sep string, cols ...string) MappingFunc {
+	return func(row []string, f *File) interface{} {
+		var parts []string
+		for _, c := range cols {
+			idx := ColIndex(c, f)
+			if idx >= 0 && idx < len(row) {
+				parts = append(parts, row[idx])
+			}
+		}
+		return strings.Join(parts, sep)
+	}
+}
+
+func EvalFormula(formula string, sources []string, row []string, f *File) interface{} {
+	expr, err := govaluate.NewEvaluableExpression(formula)
+	if err != nil {
+		return fmt.Sprintf("invalid formula: %s", formula)
+	}
+	params := make(map[string]interface{})
+	for _, c := range f.Col {
+		idx := ColIndex(c, f)
+		if idx >= 0 && idx < len(row) {
+			params[c] = ParseFloatSafe(row[idx])
+		}
+	}
+	result, err := expr.Evaluate(params)
+	if err != nil {
+		return fmt.Sprintf("error: %v", err)
+	}
+	return result
+}
+
+/*
+=====================
+Conversions
+=====================
+*/
+
+func (dbMap *DBColumnMapping) ToColumnMapping() ColumnMapping {
+	var transform MappingFunc
+	switch dbMap.Transform {
+	case "sum":
+		transform = SumColumns(dbMap.Source...)
+	case "concat":
+		sep := " "
+		if s, ok := dbMap.Params["sep"].(string); ok {
+			sep = s
+		}
+		transform = ConcatColumns(sep, dbMap.Source...)
+	case "average":
+		transform = AverageColumns(dbMap.Source...)
+	case "raw":
+		formula := dbMap.Formula
+		transform = func(row []string, f *File) interface{} {
+			return EvalFormula(formula, dbMap.Source, row, f)
+		}
+	default:
+		transform = nil
+	}
+	return ColumnMapping{
+		Target:    dbMap.Target,
+		Source:    dbMap.Source,
+		Transform: transform,
+		Formula:   dbMap.Formula,
+		Params:    dbMap.Params,
+		Default:   dbMap.Default,
+	}
+}
+
+func (m *ColumnMapping) ToDBMapping() DBColumnMapping {
+	transformType := "none"
+	switch {
+	case m.Transform == nil && m.Formula == "":
+		transformType = "none"
+	case m.Formula != "":
+		transformType = "raw"
+	default:
+		transformType = "custom"
+	}
+	return DBColumnMapping{
+		Target:    m.Target,
+		Source:    m.Source,
+		Transform: transformType,
+		Formula:   m.Formula,
+		Params:    m.Params,
+		Default:   m.Default,
+	}
+}
