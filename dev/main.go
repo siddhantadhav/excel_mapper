@@ -31,9 +31,9 @@ func main() {
 	// Connect to MongoDB
 	// ------------------------------
 	mongoCfg := excel_mapper.MongoConfig{
-		URI:        "mongodb://karmaAdmin:Admin%401234@192.168.1.225:27017/?authSource=admin",
-		Database:   "excel_db",
-		Collection: "mappings",
+		URI:        "",
+		Database:   "",
+		Collection: "",
 		Timeout:    10 * time.Second,
 	}
 
