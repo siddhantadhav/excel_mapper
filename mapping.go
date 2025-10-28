@@ -22,7 +22,7 @@ type File struct {
 }
 
 // MappingFunc generates a value for a FileB column
-type MappingFunc func(row []string, fA *File) interface{}
+type MappingFunc func(row []string, fA *File) any
 
 // ColumnMapping represents a mapping rule
 type ColumnMapping struct {
@@ -30,8 +30,8 @@ type ColumnMapping struct {
 	Source    []string
 	Transform MappingFunc
 	Formula   string
-	Params    map[string]interface{}
-	Default   interface{}
+	Params    map[string]any
+	Default   any
 }
 
 /*
@@ -142,14 +142,14 @@ func FillFile(fileA, fileB *File, mappings []ColumnMapping, output string) error
 
 	// Fill rows
 	for i, row := range rowsA[1:] {
-		vals := make([]interface{}, len(colIdxB.ColMap))
+		vals := make([]any, len(colIdxB.ColMap))
 		for _, m := range mappings {
 			idxB, ok := colIdxB.ColMap[strings.ToLower(strings.TrimSpace(m.Target))]
 			if !ok {
 				continue
 			}
 
-			var val interface{}
+			var val any
 			if m.Transform != nil {
 				val = m.Transform(row, fileA)
 			} else if m.Formula != "" {

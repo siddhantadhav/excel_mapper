@@ -2,10 +2,10 @@ package excel_mapper
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
@@ -19,10 +19,10 @@ Mongo Storage
 type DBColumnMapping struct {
 	Target    string                 `bson:"target" json:"target"`
 	Source    []string               `bson:"source" json:"source"`
-	Transform string                 `bson:"transform" json:"transform"`                 // sum, concat, average, raw, none
-	Formula   string                 `bson:"formula,omitempty" json:"formula,omitempty"` // raw calculations
-	Params    map[string]interface{} `bson:"params,omitempty" json:"params,omitempty"`   // e.g. sep for concat
-	Default   interface{}            `bson:"default,omitempty" json:"default,omitempty"`
+	Transform string                 `bson:"transform" json:"transform"`                 
+	Formula   string                 `bson:"formula,omitempty" json:"formula,omitempty"`
+	Params    map[string]any				 `bson:"params,omitempty" json:"params,omitempty"` 
+	Default   any				             `bson:"default,omitempty" json:"default,omitempty"`
 }
 
 type MappingStorage struct {
@@ -32,82 +32,64 @@ type MappingStorage struct {
 	Updated  time.Time         `bson:"updated_at" json:"updated_at"`
 }
 
-type MongoStorage struct {
-	client     *mongo.Client
-	collection *mongo.Collection
-}
+func CreateIndex(ctx context.Context, collection *mongo.Collection) error {
+	c, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
 
-type MongoConfig struct {
-	URI        string
-	Database   string
-	Collection string
-	Timeout    time.Duration
-}
-
-func ConnectMongo(cfg MongoConfig) (*MongoStorage, error) {
-	if cfg.URI == "" || cfg.Database == "" || cfg.Collection == "" {
-		return nil, errors.New("incomplete MongoDB config")
+	indexModel := mongo.IndexModel{
+		Keys: bson.D{
+			{Key: "unique_id", Value: 1},
+		},
+		Options: options.Index().SetUnique(true).SetName("unique_id"),
 	}
-	client, err := mongo.Connect(options.Client().ApplyURI(cfg.URI))
+
+	_, err := collection.Indexes().CreateOne(c, indexModel)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func SaveMapping(ctx context.Context, collection *mongo.Collection, document *MappingStorage) (*mongo.InsertOneResult, error) {
+	err := CreateIndex(ctx, collection)
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
+
+	c, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	if err := client.Ping(ctx, nil); err != nil {
-		return nil, fmt.Errorf("ping failed: %v", err)
+
+	result, err := collection.InsertOne(c, document)
+
+	if err != nil {
+		if writeException, ok := err.(mongo.WriteException); ok {
+			for _, we := range writeException.WriteErrors {
+				if we.Code == 11000 { 
+					return nil, fmt.Errorf("document with unique_id %s already exists", document.UniqueId)
+				}
+			}
+		}
+		return nil, err
 	}
-	coll := client.Database(cfg.Database).Collection(cfg.Collection)
-	return &MongoStorage{client: client, collection: coll}, nil
+
+	return result, nil
 }
 
-func (ms *MongoStorage) SaveMapping(uniqueId string, dbMappings []DBColumnMapping) error {
-	if uniqueId == "" {
-		return errors.New("uniqueId required")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func LoadMapping(ctx context.Context, collection *mongo.Collection, uniqueId string) (*MappingStorage, error) {
+	c, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
-	doc := MappingStorage{
-		UniqueId: uniqueId,
-		Mappings: dbMappings,
-		Updated:  time.Now(),
-	}
+	var record MappingStorage
 
-	// Only update these fields
-	update := map[string]interface{}{
-		"$set": map[string]interface{}{
-			"mappings":   doc.Mappings,
-			"updated_at": doc.Updated,
-		},
-		"$setOnInsert": map[string]interface{}{
-			"unique_id":  doc.UniqueId,
-			"created_at": time.Now(),
-		},
-	}
+	err := collection.FindOne(c, bson.M{
+		"unique_id": uniqueId,
+	}).Decode(&record)
 
-	opts := options.UpdateOne().SetUpsert(true)
-	_, err := ms.collection.UpdateOne(ctx, map[string]interface{}{"unique_id": uniqueId}, update, opts)
-	return err
-
-}
-
-func (ms *MongoStorage) LoadMapping(uniqueId string) ([]DBColumnMapping, error) {
-	if uniqueId == "" {
-		return nil, errors.New("uniqueId required")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	var stored MappingStorage
-	err := ms.collection.FindOne(ctx, map[string]interface{}{"unique_id": uniqueId}).Decode(&stored)
 	if err != nil {
 		return nil, err
 	}
-	return stored.Mappings, nil
+
+	return &record, nil
 }
 
-func (ms *MongoStorage) Close() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return ms.client.Disconnect(ctx)
-}

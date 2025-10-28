@@ -20,7 +20,7 @@ func ParseFloatSafe(v string) float64 {
 }
 
 func SumColumns(cols ...string) MappingFunc {
-	return func(row []string, f *File) interface{} {
+	return func(row []string, f *File) any {
 		sum := 0.0
 		for _, c := range cols {
 			idx := ColIndex(c, f)
@@ -33,7 +33,7 @@ func SumColumns(cols ...string) MappingFunc {
 }
 
 func AverageColumns(cols ...string) MappingFunc {
-	return func(row []string, f *File) interface{} {
+	return func(row []string, f *File) any {
 		sum := 0.0
 		count := 0
 		for _, c := range cols {
@@ -51,7 +51,7 @@ func AverageColumns(cols ...string) MappingFunc {
 }
 
 func ConcatColumns(sep string, cols ...string) MappingFunc {
-	return func(row []string, f *File) interface{} {
+	return func(row []string, f *File) any {
 		var parts []string
 		for _, c := range cols {
 			idx := ColIndex(c, f)
@@ -63,12 +63,12 @@ func ConcatColumns(sep string, cols ...string) MappingFunc {
 	}
 }
 
-func EvalFormula(formula string, sources []string, row []string, f *File) interface{} {
+func EvalFormula(formula string, sources []string, row []string, f *File) any {
 	expr, err := govaluate.NewEvaluableExpression(formula)
 	if err != nil {
 		return fmt.Sprintf("invalid formula: %s", formula)
 	}
-	params := make(map[string]interface{})
+	params := make(map[string]any)
 	for _, c := range f.Col {
 		idx := ColIndex(c, f)
 		if idx >= 0 && idx < len(row) {
@@ -103,7 +103,7 @@ func (dbMap *DBColumnMapping) ToColumnMapping() ColumnMapping {
 		transform = AverageColumns(dbMap.Source...)
 	case "raw":
 		formula := dbMap.Formula
-		transform = func(row []string, f *File) interface{} {
+		transform = func(row []string, f *File) any {
 			return EvalFormula(formula, dbMap.Source, row, f)
 		}
 	default:
