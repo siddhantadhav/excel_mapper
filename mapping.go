@@ -105,7 +105,7 @@ File Filling
 =====================
 */
 
-func FillFile(fileA, fileB *File, mappings []ColumnMapping, output string) error {
+func FillFile(fileA, fileB *File, mappings []ColumnMapping) error {
 	if fileA == nil || fileB == nil {
 		return fmt.Errorf("fileA or fileB is nil")
 	}
@@ -169,7 +169,7 @@ func FillFile(fileA, fileB *File, mappings []ColumnMapping, output string) error
 		_ = fB.SetSheetRow(sheetB, fmt.Sprintf("A%d", i+2), &vals)
 	}
 
-	if err := fB.SaveAs(output); err != nil {
+	if err := fB.SaveAs(fileB.Path + "/" + fileB.Name); err != nil {
 		return fmt.Errorf("save FileB: %v", err)
 	}
 	return nil
