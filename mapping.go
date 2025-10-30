@@ -110,6 +110,7 @@ func FillFile(fileA, fileB *File, mappings []ColumnMapping) error {
 		return fmt.Errorf("fileA or fileB is nil")
 	}
 
+	// Open FileA
 	fA, err := excelize.OpenFile(fileA.Path)
 	if err != nil {
 		return fmt.Errorf("open FileA: %v", err)
@@ -121,6 +122,7 @@ func FillFile(fileA, fileB *File, mappings []ColumnMapping) error {
 		return fmt.Errorf("FileA has no data")
 	}
 
+	// Open or create FileB
 	var fB *excelize.File
 	if _, err := os.Stat(fileB.Path); os.IsNotExist(err) {
 		fB = excelize.NewFile()
@@ -134,15 +136,15 @@ func FillFile(fileA, fileB *File, mappings []ColumnMapping) error {
 
 	sheetB := ensureSheet(fB)
 
-	// Build headers
+	// Build headers and update FileB
 	headers := buildHeaders(fileB.Col, mappings)
 	writeHeaders(fB, sheetB, headers)
 	fileB.Col = headers
-	colIdxB := NewFileIndex(&File{Col: headers})
+	colIdxB := NewFileIndex(fileB) // use updated headers
 
 	// Fill rows
 	for i, row := range rowsA[1:] {
-		vals := make([]any, len(colIdxB.ColMap))
+		vals := make([]any, len(fileB.Col)) // slice matches headers length
 		for _, m := range mappings {
 			idxB, ok := colIdxB.ColMap[strings.ToLower(strings.TrimSpace(m.Target))]
 			if !ok {
@@ -166,42 +168,57 @@ func FillFile(fileA, fileB *File, mappings []ColumnMapping) error {
 			}
 			vals[idxB] = val
 		}
-		_ = fB.SetSheetRow(sheetB, fmt.Sprintf("A%d", i+2), &vals)
+
+		// Write row to sheet
+		err := fB.SetSheetRow(sheetB, fmt.Sprintf("A%d", i+2), &vals)
+		if err != nil {
+			return fmt.Errorf("writing row %d: %v", i+2, err)
+		}
 	}
 
-	if err := fB.SaveAs(fileB.Path + "/" + fileB.Name); err != nil {
+	// Save FileB
+	if err := fB.SaveAs(fileB.Path); err != nil {
 		return fmt.Errorf("save FileB: %v", err)
 	}
 	return nil
 }
 
+// ensureSheet returns the first sheet or creates one if none exist
 func ensureSheet(f *excelize.File) string {
 	sheets := f.GetSheetList()
 	if len(sheets) > 0 {
-		return sheets[0]
+		return sheets[0] // existing sheet name
 	}
-	return f.GetSheetName(0)
+	// Create new sheet
+	sheetID, err := f.NewSheet("Sheet1")
+	if err != nil {
+		// fallback: use default first sheet "Sheet1"
+		return "Sheet1"
+	}
+	return f.GetSheetName(sheetID)
 }
 
+// buildHeaders combines existing headers with new mappings
 func buildHeaders(existing []string, mappings []ColumnMapping) []string {
 	headers := make([]string, len(existing))
 	copy(headers, existing)
 
 	headerMap := make(map[string]bool)
 	for _, h := range existing {
-		headerMap[h] = true
+		headerMap[strings.ToLower(h)] = true
 	}
 
 	for _, m := range mappings {
-		if _, ok := headerMap[m.Target]; !ok {
+		if _, ok := headerMap[strings.ToLower(m.Target)]; !ok {
 			headers = append(headers, m.Target)
-			headerMap[m.Target] = true
+			headerMap[strings.ToLower(m.Target)] = true
 		}
 	}
 
 	return headers
 }
 
+// writeHeaders writes the headers to the first row
 func writeHeaders(f *excelize.File, sheet string, headers []string) {
 	_ = f.SetSheetRow(sheet, "A1", &headers)
 }
