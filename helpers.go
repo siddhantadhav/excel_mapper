@@ -116,6 +116,7 @@ func (dbMap *DBColumnMapping) ToColumnMapping() ColumnMapping {
 		Formula:   dbMap.Formula,
 		Params:    dbMap.Params,
 		Default:   dbMap.Default,
+		Unique:    dbMap.Unique,
 	}
 }
 
@@ -136,5 +137,6 @@ func (m *ColumnMapping) ToDBMapping() DBColumnMapping {
 		Formula:   m.Formula,
 		Params:    m.Params,
 		Default:   m.Default,
+		Unique:    m.Unique,
 	}
 }
