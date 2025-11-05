@@ -17,12 +17,13 @@ Mongo Storage
 */
 
 type DBColumnMapping struct {
-	Target    string                 `bson:"target" json:"target"`
-	Source    []string               `bson:"source" json:"source"`
-	Transform string                 `bson:"transform" json:"transform"`                 
-	Formula   string                 `bson:"formula,omitempty" json:"formula,omitempty"`
-	Params    map[string]any				 `bson:"params,omitempty" json:"params,omitempty"` 
-	Default   any				             `bson:"default,omitempty" json:"default,omitempty"`
+	Target    string         `bson:"target" json:"target"`
+	Source    []string       `bson:"source" json:"source"`
+	Transform string         `bson:"transform" json:"transform"`
+	Formula   string         `bson:"formula,omitempty" json:"formula,omitempty"`
+	Params    map[string]any `bson:"params,omitempty" json:"params,omitempty"`
+	Default   any            `bson:"default,omitempty" json:"default,omitempty"`
+	Unique    bool           `bson:"unique,omitempty" json:"unique,omitempty"`
 }
 
 type MappingStorage struct {
@@ -65,7 +66,7 @@ func SaveMapping(ctx context.Context, collection *mongo.Collection, document *Ma
 	if err != nil {
 		if writeException, ok := err.(mongo.WriteException); ok {
 			for _, we := range writeException.WriteErrors {
-				if we.Code == 11000 { 
+				if we.Code == 11000 {
 					return nil, fmt.Errorf("document with unique_id %s already exists", document.UniqueId)
 				}
 			}
@@ -92,4 +93,3 @@ func LoadMapping(ctx context.Context, collection *mongo.Collection, uniqueId str
 
 	return &record, nil
 }
-

@@ -32,6 +32,7 @@ type ColumnMapping struct {
 	Formula   string
 	Params    map[string]any
 	Default   any
+	Unique    bool
 }
 
 /*
@@ -110,7 +111,6 @@ func FillFile(fileA, fileB *File, mappings []ColumnMapping) error {
 		return fmt.Errorf("fileA or fileB is nil")
 	}
 
-	// Open FileA
 	fA, err := excelize.OpenFile(fileA.Path)
 	if err != nil {
 		return fmt.Errorf("open FileA: %v", err)
@@ -122,7 +122,6 @@ func FillFile(fileA, fileB *File, mappings []ColumnMapping) error {
 		return fmt.Errorf("FileA has no data")
 	}
 
-	// Open or create FileB
 	var fB *excelize.File
 	if _, err := os.Stat(fileB.Path); os.IsNotExist(err) {
 		fB = excelize.NewFile()
@@ -136,15 +135,27 @@ func FillFile(fileA, fileB *File, mappings []ColumnMapping) error {
 
 	sheetB := ensureSheet(fB)
 
-	// Build headers and update FileB
 	headers := buildHeaders(fileB.Col, mappings)
 	writeHeaders(fB, sheetB, headers)
 	fileB.Col = headers
-	colIdxB := NewFileIndex(fileB) // use updated headers
+	colIdxB := NewFileIndex(fileB)
 
-	// Fill rows
-	for i, row := range rowsA[1:] {
-		vals := make([]any, len(fileB.Col)) // slice matches headers length
+	// Unique trackers per unique column index
+	uniqueCols := make(map[int]map[string]bool)
+	for _, m := range mappings {
+		if m.Unique {
+			if idxB, ok := colIdxB.ColMap[strings.ToLower(strings.TrimSpace(m.Target))]; ok {
+				uniqueCols[idxB] = make(map[string]bool)
+			}
+		}
+	}
+
+	rowNumber := 2
+
+	for _, row := range rowsA[1:] {
+		vals := make([]any, len(fileB.Col))
+		skipRow := false
+
 		for _, m := range mappings {
 			idxB, ok := colIdxB.ColMap[strings.ToLower(strings.TrimSpace(m.Target))]
 			if !ok {
@@ -166,20 +177,42 @@ func FillFile(fileA, fileB *File, mappings []ColumnMapping) error {
 			} else {
 				val = m.Default
 			}
+
+			if tracker, ok := uniqueCols[idxB]; ok {
+				// Instead of normalizeKey, do inline conversion here
+				var key string
+				switch v := val.(type) {
+				case string:
+					key = v // no trim or normalization
+				case nil:
+					key = ""
+				default:
+					key = fmt.Sprintf("%v", v)
+				}
+				if tracker[key] {
+					skipRow = true
+					break
+				}
+				tracker[key] = true
+			}
+
 			vals[idxB] = val
 		}
 
-		// Write row to sheet
-		err := fB.SetSheetRow(sheetB, fmt.Sprintf("A%d", i+2), &vals)
-		if err != nil {
-			return fmt.Errorf("writing row %d: %v", i+2, err)
+		if skipRow {
+			continue
 		}
+
+		if err := fB.SetSheetRow(sheetB, fmt.Sprintf("A%d", rowNumber), &vals); err != nil {
+			return fmt.Errorf("writing row %d: %v", rowNumber, err)
+		}
+		rowNumber++
 	}
 
-	// Save FileB
 	if err := fB.SaveAs(fileB.Path); err != nil {
 		return fmt.Errorf("save FileB: %v", err)
 	}
+
 	return nil
 }
 
