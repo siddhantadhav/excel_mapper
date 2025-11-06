@@ -111,17 +111,22 @@ func FillFile(fileA, fileB *File, mappings []ColumnMapping) error {
 		return fmt.Errorf("fileA or fileB is nil")
 	}
 
+	// --- Open source file (FileA)
 	fA, err := excelize.OpenFile(fileA.Path)
 	if err != nil {
 		return fmt.Errorf("open FileA: %v", err)
 	}
 	defer fA.Close()
 
-	rowsA, err := fA.GetRows(fA.GetSheetList()[0])
+	sheetA := fA.GetSheetList()[0]
+	rowsA, err := fA.GetRows(sheetA)
 	if err != nil || len(rowsA) <= 1 {
 		return fmt.Errorf("FileA has no data")
 	}
 
+	fileA.Col = rowsA[0]
+
+	// --- Open or create destination file (FileB)
 	var fB *excelize.File
 	if _, err := os.Stat(fileB.Path); os.IsNotExist(err) {
 		fB = excelize.NewFile()
@@ -135,12 +140,13 @@ func FillFile(fileA, fileB *File, mappings []ColumnMapping) error {
 
 	sheetB := ensureSheet(fB)
 
+	// --- Write headers if needed
 	headers := buildHeaders(fileB.Col, mappings)
 	writeHeaders(fB, sheetB, headers)
 	fileB.Col = headers
 	colIdxB := NewFileIndex(fileB)
 
-	// Unique trackers per unique column index
+	// --- Unique trackers for unique columns
 	uniqueCols := make(map[int]map[string]bool)
 	for _, m := range mappings {
 		if m.Unique {
@@ -163,6 +169,7 @@ func FillFile(fileA, fileB *File, mappings []ColumnMapping) error {
 			}
 
 			var val any
+
 			if m.Transform != nil {
 				val = m.Transform(row, fileA)
 			} else if m.Formula != "" {
@@ -178,12 +185,12 @@ func FillFile(fileA, fileB *File, mappings []ColumnMapping) error {
 				val = m.Default
 			}
 
+			// --- Unique check
 			if tracker, ok := uniqueCols[idxB]; ok {
-				// Instead of normalizeKey, do inline conversion here
 				var key string
 				switch v := val.(type) {
 				case string:
-					key = v // no trim or normalization
+					key = v
 				case nil:
 					key = ""
 				default:
@@ -232,22 +239,11 @@ func ensureSheet(f *excelize.File) string {
 }
 
 // buildHeaders combines existing headers with new mappings
-func buildHeaders(existing []string, mappings []ColumnMapping) []string {
-	headers := make([]string, len(existing))
-	copy(headers, existing)
-
-	headerMap := make(map[string]bool)
-	for _, h := range existing {
-		headerMap[strings.ToLower(h)] = true
-	}
-
+func buildHeaders(_ []string, mappings []ColumnMapping) []string {
+	headers := make([]string, 0, len(mappings))
 	for _, m := range mappings {
-		if _, ok := headerMap[strings.ToLower(m.Target)]; !ok {
-			headers = append(headers, m.Target)
-			headerMap[strings.ToLower(m.Target)] = true
-		}
+		headers = append(headers, m.Target)
 	}
-
 	return headers
 }
 
