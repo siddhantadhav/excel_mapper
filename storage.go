@@ -29,8 +29,6 @@ type DBColumnMapping struct {
 type MappingStorage struct {
 	UniqueId string            `bson:"unique_id" json:"unique_id"`
 	Mappings []DBColumnMapping `bson:"mappings" json:"mappings"`
-	Created  time.Time         `bson:"created_at" json:"created_at"`
-	Updated  time.Time         `bson:"updated_at" json:"updated_at"`
 }
 
 func CreateIndex(ctx context.Context, collection *mongo.Collection) error {
