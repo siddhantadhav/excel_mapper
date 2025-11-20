@@ -12,9 +12,12 @@ import (
 )
 
 type CLIFlags struct {
-	JSONFilePath   string
-	ClientFilePath string
-	OutputFilePath string
+	JSONFilePath          string
+	ClientFilePath        string
+	OutputFilePath        string
+	HTMLTemplatePath      string
+	FinalHTMLTemplatePath string
+	FinalPDFPath          string
 }
 
 func ParseJSON(jsonFilePath string) (*excel_mapper.MappingStorage, error) {
@@ -41,51 +44,53 @@ func GetColumnMapping(mappingStorage *excel_mapper.MappingStorage) ([]excel_mapp
 }
 
 func main() {
-	jsonFilePath := flag.String("json", "", "path to json file")
-	clientFilePath := flag.String("input", "", "path to client excel file")
-	outputFilePath := flag.String("output", "", "path to output excel file")
+	jsonFilePath := flag.String("json", "", "Path to JSON mapping file")
+	clientFilePath := flag.String("input", "", "Path to client Excel file")
+	outputFilePath := flag.String("output", "", "Path to output Excel file")
 	flag.Parse()
 
+	// Validate required flags
 	if *jsonFilePath == "" || *clientFilePath == "" || *outputFilePath == "" {
-		log.Fatal("Please provide --json, --input, and --output flags")
+		log.Fatal("❌ Please provide --json, --input, and --output flags")
 	}
 
+	// Initialize flags structure
 	flags := CLIFlags{
-		JSONFilePath:   *jsonFilePath,
-		ClientFilePath: *clientFilePath,
-		OutputFilePath: *outputFilePath,
+		JSONFilePath:          *jsonFilePath,
+		ClientFilePath:        *clientFilePath,
+		OutputFilePath:        *outputFilePath,
 	}
 
-	// Load JSON mapping
+	// --- Step 1: Load JSON mapping ---
 	mappingStorage, err := ParseJSON(flags.JSONFilePath)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("❌ Failed to parse JSON mapping: %v", err)
 	}
 
 	columnMappings, err := GetColumnMapping(mappingStorage)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("❌ Failed to extract column mappings: %v", err)
 	}
 
-	// Init input and output files
+	// --- Step 2: Initialize input and output Excel files ---
 	inputFile, err := excel_mapper.InitFile(filepath.Dir(flags.ClientFilePath), filepath.Base(flags.ClientFilePath))
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("❌ Failed to load input Excel file: %v", err)
 	}
 
 	outputFile, err := excel_mapper.InitFile(filepath.Dir(flags.OutputFilePath), filepath.Base(flags.OutputFilePath))
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("❌ Failed to create output Excel file: %v", err)
 	}
 
-	fmt.Printf("Input headers: %v\n", inputFile.Col)
-	fmt.Printf("Mappings: %v\n", columnMappings)
+	fmt.Printf("📥 Input headers: %v\n", inputFile.Col)
+	fmt.Printf("🗺️ Mappings: %v\n", columnMappings)
 
-	// Fill output file
+	// --- Step 3: Fill output Excel file ---
 	err = excel_mapper.FillFile(inputFile, outputFile, columnMappings)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("❌ Failed to fill output file: %v", err)
 	}
 
-	fmt.Println("Output file generated successfully!")
+	fmt.Println("✅ Output Excel file generated successfully!")
 }

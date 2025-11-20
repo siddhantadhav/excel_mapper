@@ -63,6 +63,44 @@ func ConcatColumns(sep string, cols ...string) MappingFunc {
 	}
 }
 
+func Unique(sourceCol string) MappingFunc {
+	seen := map[string]bool{}
+
+	return func(row []string, f *File) any {
+		idx := ColIndex(sourceCol, f)
+		if idx < 0 || idx >= len(row) {
+			return ""
+		}
+
+		val := row[idx]
+
+		if seen[val] {
+			return ""
+		}
+
+		seen[val] = true
+		return val
+	}
+}
+
+func Count(sources ...string) MappingFunc {
+	counts := map[string]int{}
+	return func(row []string, f *File) any {
+		parts := make([]string, len(sources))
+		for i, col := range sources {
+			idx := ColIndex(col, f)
+			if idx >= 0 && idx < len(row) {
+				parts[i] = row[idx]
+			} else {
+				parts[i] = ""
+			}
+		}
+		key := strings.Join(parts, "|")
+		counts[key]++
+		return fmt.Sprintf("%s=%d", key, counts[key])
+	}
+}
+
 func EvalFormula(formula string, sources []string, row []string, f *File) any {
 	expr, err := govaluate.NewEvaluableExpression(formula)
 	if err != nil {
@@ -101,6 +139,10 @@ func (dbMap *DBColumnMapping) ToColumnMapping() ColumnMapping {
 		transform = ConcatColumns(sep, dbMap.Source...)
 	case "average":
 		transform = AverageColumns(dbMap.Source...)
+	case "unique":
+		transform = Unique(dbMap.Source[0])
+	case "count":
+		transform = Count(dbMap.Source...)
 	case "raw":
 		formula := dbMap.Formula
 		transform = func(row []string, f *File) any {
@@ -116,12 +158,11 @@ func (dbMap *DBColumnMapping) ToColumnMapping() ColumnMapping {
 		Formula:   dbMap.Formula,
 		Params:    dbMap.Params,
 		Default:   dbMap.Default,
-		Unique:    dbMap.Unique,
 	}
 }
 
 func (m *ColumnMapping) ToDBMapping() DBColumnMapping {
-	transformType := "none"
+	var transformType string
 	switch {
 	case m.Transform == nil && m.Formula == "":
 		transformType = "none"
@@ -137,6 +178,5 @@ func (m *ColumnMapping) ToDBMapping() DBColumnMapping {
 		Formula:   m.Formula,
 		Params:    m.Params,
 		Default:   m.Default,
-		Unique:    m.Unique,
 	}
 }
