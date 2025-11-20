@@ -32,7 +32,6 @@ type ColumnMapping struct {
 	Formula   string
 	Params    map[string]any
 	Default   any
-	Unique    bool
 }
 
 /*
@@ -111,7 +110,7 @@ func FillFile(fileA, fileB *File, mappings []ColumnMapping) error {
 		return fmt.Errorf("fileA or fileB is nil")
 	}
 
-	// --- Open source file (FileA)
+	// --- Open FileA
 	fA, err := excelize.OpenFile(fileA.Path)
 	if err != nil {
 		return fmt.Errorf("open FileA: %v", err)
@@ -126,7 +125,7 @@ func FillFile(fileA, fileB *File, mappings []ColumnMapping) error {
 
 	fileA.Col = rowsA[0]
 
-	// --- Open or create destination file (FileB)
+	// --- Open or create FileB
 	var fB *excelize.File
 	if _, err := os.Stat(fileB.Path); os.IsNotExist(err) {
 		fB = excelize.NewFile()
@@ -140,27 +139,18 @@ func FillFile(fileA, fileB *File, mappings []ColumnMapping) error {
 
 	sheetB := ensureSheet(fB)
 
-	// --- Write headers if needed
+	// --- Build Headers (existing + new mappings)
 	headers := buildHeaders(fileB.Col, mappings)
 	writeHeaders(fB, sheetB, headers)
+
 	fileB.Col = headers
 	colIdxB := NewFileIndex(fileB)
 
-	// --- Unique trackers for unique columns
-	uniqueCols := make(map[int]map[string]bool)
-	for _, m := range mappings {
-		if m.Unique {
-			if idxB, ok := colIdxB.ColMap[strings.ToLower(strings.TrimSpace(m.Target))]; ok {
-				uniqueCols[idxB] = make(map[string]bool)
-			}
-		}
-	}
-
+	// --- Fill rows
 	rowNumber := 2
 
 	for _, row := range rowsA[1:] {
-		vals := make([]any, len(fileB.Col))
-		skipRow := false
+		vals := make([]any, len(headers))
 
 		for _, m := range mappings {
 			idxB, ok := colIdxB.ColMap[strings.ToLower(strings.TrimSpace(m.Target))]
@@ -170,52 +160,36 @@ func FillFile(fileA, fileB *File, mappings []ColumnMapping) error {
 
 			var val any
 
-			if m.Transform != nil {
+			switch {
+			case m.Transform != nil:
 				val = m.Transform(row, fileA)
-			} else if m.Formula != "" {
+
+			case m.Formula != "":
 				val = EvalFormula(m.Formula, m.Source, row, fileA)
-			} else if len(m.Source) > 0 {
+
+			case len(m.Source) > 0:
 				srcIdx := ColIndex(m.Source[0], fileA)
 				if srcIdx != -1 && srcIdx < len(row) {
 					val = row[srcIdx]
 				} else {
 					val = m.Default
 				}
-			} else {
-				val = m.Default
-			}
 
-			// --- Unique check
-			if tracker, ok := uniqueCols[idxB]; ok {
-				var key string
-				switch v := val.(type) {
-				case string:
-					key = v
-				case nil:
-					key = ""
-				default:
-					key = fmt.Sprintf("%v", v)
-				}
-				if tracker[key] {
-					skipRow = true
-					break
-				}
-				tracker[key] = true
+			default:
+				val = m.Default
 			}
 
 			vals[idxB] = val
 		}
 
-		if skipRow {
-			continue
-		}
-
+		// write row
 		if err := fB.SetSheetRow(sheetB, fmt.Sprintf("A%d", rowNumber), &vals); err != nil {
 			return fmt.Errorf("writing row %d: %v", rowNumber, err)
 		}
 		rowNumber++
 	}
 
+	// Save file
 	if err := fB.SaveAs(fileB.Path); err != nil {
 		return fmt.Errorf("save FileB: %v", err)
 	}
